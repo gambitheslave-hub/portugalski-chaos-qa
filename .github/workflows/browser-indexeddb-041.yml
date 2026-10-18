@@ -1,0 +1,79 @@
+
+name: PORTUGALSKI CHAOS 0.4.1 - native Chromium IndexedDB
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/browser-indexeddb-041.yml
+      - PORTUGALSKI_CHAOS_BROWSER_INDEXEDDB_041.zip
+      - PORTUGALSKI_CHAOS_0_4_1_INTEGRITY_HARDENING_PAKIET.zip
+
+permissions:
+  contents: read
+
+jobs:
+  real-chromium-indexeddb:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      QA_OUTPUT: .qa/browser/${{ github.run_id }}-${{ github.run_attempt }}
+      QA_HEAD_SHA: ${{ github.sha }}
+      QA_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Checkout isolated QA repository
+        uses: actions/checkout@v4
+
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Verify source archives and materialize prepared tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '8f0a658eaba599ad53c0680cddf40bf1fc371e8e0391c00de4d44b487febb182  PORTUGALSKI_CHAOS_BROWSER_INDEXEDDB_041.zip' | sha256sum -c -
+          echo '079234f995485697579d64741742758b345dd5bba9285afde8649546b6ba3b1f  PORTUGALSKI_CHAOS_0_4_1_INTEGRITY_HARDENING_PAKIET.zip' | sha256sum -c -
+          mkdir -p .qa-ci041
+          unzip -q PORTUGALSKI_CHAOS_BROWSER_INDEXEDDB_041.zip -d .qa-ci041
+          cp PORTUGALSKI_CHAOS_0_4_1_INTEGRITY_HARDENING_PAKIET.zip .qa-ci041/
+          cd .qa-ci041
+          python scripts/qa.py verify
+
+      - name: Regression Node (35 cases), stress and reproducible build
+        working-directory: .qa-ci041
+        run: python scripts/qa.py node
+
+      - name: Install actual Chromium and Playwright
+        working-directory: .qa-ci041
+        run: |
+          python -m pip install -r requirements-qa.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Execute real Chromium T01-T10 and native IndexedDB
+        working-directory: .qa-ci041
+        run: python qa/native_chromium.py
+
+      - name: Generate per-case evidence report
+        if: always()
+        working-directory: .qa-ci041
+        run: python qa/report.py --results "$QA_OUTPUT/results.json" --output "$QA_OUTPUT"
+
+      - name: Upload actual logs, traces, screenshots and report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: portugalski-chaos-browser-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .qa-ci041/.qa/results/
+            .qa-ci041/.qa/browser/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
