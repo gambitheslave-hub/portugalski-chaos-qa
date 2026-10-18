@@ -73,7 +73,7 @@ jobs:
           set -euo pipefail
           npm install --ignore-scripts --no-audit --no-fund --package-lock=false 2>&1 | tee "$QA_OUTPUT/npm-install.log"
           npx playwright install android 2>&1 | tee "$QA_OUTPUT/android-driver-install.log"
-            - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v3
         with:
           packages: 'platform-tools'
       - name: Prepare Android SDK build tools
