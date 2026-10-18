@@ -1,0 +1,136 @@
+name: PORTUGALSKI CHAOS 0.4.1 - Android emulator VI.B
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_local_uris:
+        description: Attempt separate Android file and content URI persistence
+        type: boolean
+        default: true
+  pull_request:
+    paths:
+      - .github/workflows/android-emulator-041-vib.yml
+      - PORTUGALSKI_CHAOS_ANDROID_EMULATOR_QA_041.zip
+      - android-vib/**
+  push:
+    branches: [qa/android-emulator-041-vib]
+    paths:
+      - .github/workflows/android-emulator-041-vib.yml
+      - PORTUGALSKI_CHAOS_ANDROID_EMULATOR_QA_041.zip
+      - android-vib/**
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  real-android-emulator:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      QA_OUTPUT: ${{ github.workspace }}/.qa-android-vib/results
+      QA_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      QA_TEST_URIS: ${{ github.event_name != 'workflow_dispatch' || inputs.test_local_uris }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Initialize evidence directory
+        run: mkdir -p "$QA_OUTPUT"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Verify and materialize the separate Android QA package
+        id: materialize
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo '9295ab57d23553f5662b7405ace463c495e49a15d4c163814eaa49d8c2726e64  PORTUGALSKI_CHAOS_ANDROID_EMULATOR_QA_041.zip' | sha256sum -c -
+          mkdir -p .qa-android-tools
+          python3 - <<'PY'
+          from pathlib import Path,PurePosixPath
+          import shutil,zipfile
+          with zipfile.ZipFile('PORTUGALSKI_CHAOS_ANDROID_EMULATOR_QA_041.zip') as z:
+              for name in z.namelist():
+                  p=PurePosixPath(name)
+                  assert p.parts[0]=='android-vib' and '..' not in p.parts and not p.is_absolute()
+              z.extractall('.qa-android-tools')
+          for name in ['PORTUGALSKI_CHAOS_0_4_1_INTEGRITY_HARDENING_PAKIET.zip','PORTUGALSKI_CHAOS_BROWSER_INDEXEDDB_041.zip']:
+              shutil.copyfile(name,Path('.qa-android-tools')/name)
+          PY
+          python3 .qa-android-tools/android-vib/prepare.py 2>&1 | tee "$QA_OUTPUT/input-verification.log"
+      - name: Install pinned Playwright and Android UI driver APKs
+        working-directory: .qa-android-tools/android-vib
+        run: |
+          set -euo pipefail
+          npm install --ignore-scripts --no-audit --no-fund --package-lock=false 2>&1 | tee "$QA_OUTPUT/npm-install.log"
+          npx playwright install android 2>&1 | tee "$QA_OUTPUT/android-driver-install.log"
+      - uses: android-actions/setup-android@v3
+      - name: Prepare Android SDK build tools
+        run: |
+          set -euo pipefail
+          sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 2>&1 | tee "$QA_OUTPUT/sdk-tools.log"
+      - name: Build optional read-only content URI fixture
+        if: env.QA_TEST_URIS != 'false'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          bash .qa-android-tools/android-vib/build-provider.sh 2>&1 | tee "$QA_OUTPUT/provider-build.log"
+      - name: Enable KVM on the isolated runner
+        run: |
+          test -e /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          ls -l /dev/kvm | tee "$QA_OUTPUT/kvm.log"
+      - name: Execute actual Android Chrome and native IndexedDB cases
+        id: emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis_playstore
+          arch: x86_64
+          profile: pixel_6
+          force-avd-creation: true
+          disable-animations: true
+          emulator-boot-timeout: 900
+          emulator-options: -no-window -no-snapshot -wipe-data -noaudio -no-boot-anim -gpu swiftshader_indirect
+          script: bash -o pipefail -c 'node .qa-android-tools/android-vib/runner.cjs 2>&1 | tee "$QA_OUTPUT/android-console.log"'
+      - name: Recheck unchanged source archives after execution
+        if: always() && steps.materialize.outcome == 'success'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .qa-android-tools/android-vib/prepare.py > "$QA_OUTPUT/integrity-after.log" 2>&1
+      - name: Generate truthful per-case report even after infrastructure failure
+        if: always()
+        run: |
+          if [ -f .qa-android-tools/android-vib/report.py ]; then
+            python3 .qa-android-tools/android-vib/report.py
+          else
+            python3 - <<'PY'
+          import csv,json,os
+          from pathlib import Path
+          p=Path(os.environ['QA_OUTPUT']);p.mkdir(parents=True,exist_ok=True)
+          rows=[{'id':f'A{i:02}','status':'BLOCKED','actual':'QA package/setup failed before Android runner','native_indexeddb':False} for i in range(1,11)]
+          rows.append({'id':'P01','status':'NOT RUN','actual':'Physical phone not exercised','native_indexeddb':False})
+          (p/'android-results.json').write_text(json.dumps({'environment':{'run_id':os.environ.get('GITHUB_RUN_ID'),'commit_sha':os.environ.get('QA_HEAD_SHA')},'results':rows},indent=2)+'\n')
+          (p/'RAPORT_ANDROID_EMULATOR_0_4_1.md').write_text('# Android VI.B — BLOCKED\n\nQA package/setup failed before browser execution; no native Android PASS. Inspect Actions logs. Physical phone NOT RUN.\n')
+          with (p/'MACIERZ_ANDROID_EMULATOR_0_4_1.csv').open('w',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=list(rows[0]));w.writeheader();w.writerows(rows)
+          PY
+          fi
+      - name: Upload observed logs, reports, screenshots and traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-vib-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .qa-android-vib/results/
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: error
